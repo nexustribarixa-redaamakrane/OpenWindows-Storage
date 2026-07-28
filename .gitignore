@@ -1,0 +1,43 @@
+# CMake build directories & output
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+Testing/
+CompileFlags.txt
+
+# Static libraries & objects
+*.a
+*.lib
+*.o
+*.obj
+
+# Executables & raw binary outputs
+*.exe
+*.bin
+*.sys
+*.img
+*.elf
+*.so
+*.dylib
+*.dll
+
+# IDE & Editor files
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+*~
+*.suo
+*.user
+
+# System & temporary logs
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
