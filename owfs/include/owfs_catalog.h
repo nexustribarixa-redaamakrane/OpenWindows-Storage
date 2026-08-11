@@ -21,4 +21,18 @@ owfs_status_t owfs_catalog_insert(htl_device_t *dev, owfs_superblock_t *sb, uint
 owfs_status_t owfs_catalog_remove(htl_device_t *dev, owfs_superblock_t *sb, uint32_t catalog_inode, const uint8_t *name, size_t name_len);
 owfs_status_t owfs_catalog_list(htl_device_t *dev, const owfs_superblock_t *sb, uint32_t catalog_inode, owfs_catalog_entry_t *entries, uint32_t max_entries, uint32_t *out_count);
 
+/* Create a new regular file in `parent_inode`, allocating a file inode and
+ * linking it into the parent catalog. */
+owfs_status_t owfs_catalog_create(htl_device_t *dev, owfs_superblock_t *sb,
+                                  uint32_t parent_inode,
+                                  const uint8_t *name, size_t name_len,
+                                  uint32_t *out_inode);
+
+/* Create a new sub-catalog in `parent_inode`, allocating a catalog-typed
+ * inode and linking it into the parent catalog. */
+owfs_status_t owfs_catalog_mkdir(htl_device_t *dev, owfs_superblock_t *sb,
+                                 uint32_t parent_inode,
+                                 const uint8_t *name, size_t name_len,
+                                 uint32_t *out_inode);
+
 #endif /* OWFS_CATALOG_H */

@@ -24,12 +24,28 @@ uint32_t ow_crc32c(uint32_t initial, const void *data, size_t len) {
 }
 
 uint64_t ow_fletcher64(const void *data, size_t len) {
-    const uint32_t *words = (const uint32_t *)data;
-    size_t count = len >> 2; /* 4-byte words */
+    /* Byte-wise little-endian accumulation: alignment-safe and handles
+       arbitrary lengths (trailing bytes are treated as a zero-padded word). */
+    const uint8_t *p = (const uint8_t *)data;
     uint64_t sum1 = 0;
     uint64_t sum2 = 0;
-    for (size_t i = 0; i < count; ++i) {
-        sum1 = (sum1 + words[i]) % 0xFFFFFFFFULL;
+    size_t i = 0;
+    while (len >= 4) {
+        uint32_t word = (uint32_t)p[i] |
+                        ((uint32_t)p[i + 1] << 8) |
+                        ((uint32_t)p[i + 2] << 16) |
+                        ((uint32_t)p[i + 3] << 24);
+        sum1 = (sum1 + word) % 0xFFFFFFFFULL;
+        sum2 = (sum2 + sum1) % 0xFFFFFFFFULL;
+        i += 4;
+        len -= 4;
+    }
+    if (len > 0) {
+        uint32_t word = 0;
+        for (size_t k = 0; k < len; ++k) {
+            word |= (uint32_t)p[i + k] << (8 * k);
+        }
+        sum1 = (sum1 + word) % 0xFFFFFFFFULL;
         sum2 = (sum2 + sum1) % 0xFFFFFFFFULL;
     }
     return (sum2 << 32) | sum1;

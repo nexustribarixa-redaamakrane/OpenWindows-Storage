@@ -32,7 +32,7 @@ owfs_status_t owfs_superblock_read(htl_device_t *dev, owfs_superblock_t *sb) {
     if (!dev || !sb) {
         return OWFS_ERR_INVALID_PARAM;
     }
-    htl_status_t hres = htl_read_block(dev, 0, sb);
+    htl_status_t hres = htl_read_block(dev, OWFS_SUPERBLOCK_BLOCK, sb);
     if (hres != HTL_OK) {
         return OWFS_ERR_IO;
     }
@@ -47,7 +47,7 @@ owfs_status_t owfs_superblock_write(htl_device_t *dev, owfs_superblock_t *sb) {
         return OWFS_ERR_INVALID_PARAM;
     }
     sb->checksum = owfs_superblock_compute_checksum(sb);
-    htl_status_t hres = htl_write_block(dev, 0, sb);
+    htl_status_t hres = htl_write_block(dev, OWFS_SUPERBLOCK_BLOCK, sb);
     if (hres != HTL_OK) {
         if (hres == HTL_ERR_WRITE_PROTECT) {
             return OWFS_ERR_WRITE_PROTECTED;

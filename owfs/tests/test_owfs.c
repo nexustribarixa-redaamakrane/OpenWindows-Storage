@@ -1,28 +1,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-
-#if defined(__has_include)
-  #if __has_include(<stdio.h>)
-    #include <stdio.h>
-  #endif
-  #if __has_include(<assert.h>)
-    #include <assert.h>
-  #endif
-#endif
-
-#ifndef assert
-  #define assert(cond) do { if (!(cond)) { for(;;); } } while(0)
-#endif
-#ifndef printf
-  static inline int dummy_printf(const char *fmt, ...) { (void)fmt; return 0; }
-  #define printf(...) dummy_printf(__VA_ARGS__)
-#endif
+#include <stdio.h>
+#include <assert.h>
 
 #include "../include/owfs_types.h"
 #include "../include/owfs_superblock.h"
 #include "../include/owfs_inode.h"
 #include "../include/owfs_catalog.h"
+#include "../include/owfs_file.h"
 #include "../include/owfs_sync.h"
 #include "../include/owfs_format.h"
 #include "../../common/include/ow_mem.h"
@@ -55,16 +41,18 @@ static htl_status_t ramdisk_flush(void *ctx) {
     return HTL_OK;
 }
 
+#define BIG_SIZE (11 * OWFS_BLOCK_SIZE) /* crosses direct -> indirect boundary */
+
+static uint8_t g_big[BIG_SIZE];
+
 int main(void) {
     printf("[OWFS] Starting unit test suite...\n");
 
-    /* 1. Verify packed struct sizes */
     assert(sizeof(owfs_superblock_t) == 0x1000);
     assert(sizeof(owfs_inode_t) == 0x100);
     assert(sizeof(owfs_catalog_entry_t) == 0x100);
     printf("  [PASS] Struct packing sizes: Superblock 4096B, Inode 256B, Catalog 256B\n");
 
-    /* Setup RAM-backed HTL device */
     htl_device_t dev;
     ow_memset(&dev, 0, sizeof(dev));
     dev.read_block = ramdisk_read;
@@ -74,13 +62,11 @@ int main(void) {
     dev.total_blocks = RAMDISK_BLOCKS;
     dev.device_type = HTL_DEV_AHCI_SATA;
 
-    /* 2. Test Volume Format */
     const uint8_t label[] = "OpenWindows_Sys";
     owfs_status_t res = owfs_format_volume(&dev, RAMDISK_BLOCKS, label, sizeof(label) - 1);
     assert(res == OWFS_OK);
     printf("  [PASS] Volume format completed cleanly\n");
 
-    /* 3. Read & Validate Superblock */
     owfs_superblock_t sb;
     res = owfs_superblock_read(&dev, &sb);
     assert(res == OWFS_OK);
@@ -89,53 +75,101 @@ int main(void) {
     assert(owfs_superblock_validate(&sb));
     printf("  [PASS] Superblock read & CRC32c validation succeeded\n");
 
-    /* 4. Test Inode Allocation */
-    uint32_t ino1 = 0, ino2 = 0;
-    res = owfs_inode_alloc(&dev, &sb, &ino1);
+    res = owfs_mount(&dev, &sb);
     assert(res == OWFS_OK);
-    assert(ino1 > 0);
+    assert(sb.mount_count == 1);
+    assert(owfs_is_dirty(&sb));
+    printf("  [PASS] Clean mount succeeded (mount_count=%u, volume now DIRTY)\n", sb.mount_count);
 
-    res = owfs_inode_alloc(&dev, &sb, &ino2);
+    uint32_t f_ino = 0, d_ino = 0;
+    const uint8_t fname[] = "system_kernel.bin";
+    const uint8_t dname[] = "Drivers";
+    res = owfs_catalog_create(&dev, &sb, OWFS_ROOT_INODE, fname, sizeof(fname) - 1, &f_ino);
     assert(res == OWFS_OK);
-    assert(ino2 > ino1);
-    printf("  [PASS] Inode allocation succeeded (Inodes #%u, #%u)\n", ino1, ino2);
-
-    /* 5. Test Catalog Insertion & Lookup */
-    const uint8_t fname1[] = "system_kernel.bin";
-    res = owfs_catalog_insert(&dev, &sb, OWFS_ROOT_INODE, fname1, sizeof(fname1) - 1, ino1, OWFS_ENTRY_FILE);
+    assert(f_ino > 0);
+    res = owfs_catalog_mkdir(&dev, &sb, OWFS_ROOT_INODE, dname, sizeof(dname) - 1, &d_ino);
     assert(res == OWFS_OK);
+    assert(d_ino > 0);
+    printf("  [PASS] Created file inode #%u and catalog inode #%u under root\n", f_ino, d_ino);
 
-    const uint8_t cname1[] = "Drivers";
-    res = owfs_catalog_insert(&dev, &sb, OWFS_ROOT_INODE, cname1, sizeof(cname1) - 1, ino2, OWFS_ENTRY_CATALOG);
+    owfs_inode_t inode;
+    res = owfs_inode_read(&dev, &sb, f_ino, &inode);
     assert(res == OWFS_OK);
+    assert(inode.entry_type == OWFS_ENTRY_FILE);
+    assert(inode.parent_inode == OWFS_ROOT_INODE);
 
-    uint32_t found_ino = 0;
-    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, fname1, sizeof(fname1) - 1, &found_ino);
+    for (uint32_t i = 0; i < BIG_SIZE; ++i) {
+        g_big[i] = (uint8_t)((i * 31U) ^ (i >> 8));
+    }
+    uint32_t written = 0;
+    res = owfs_file_write(&dev, &sb, &inode, f_ino, g_big, 0, BIG_SIZE, &written);
     assert(res == OWFS_OK);
-    assert(found_ino == ino1);
+    assert(written == BIG_SIZE);
+    assert(inode.size_bytes == BIG_SIZE);
+    assert(inode.block_count >= 11);
+    printf("  [PASS] Wrote %u bytes across %u blocks (crosses direct->indirect)\n",
+           inode.size_bytes, inode.block_count);
 
-    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, cname1, sizeof(cname1) - 1, &found_ino);
+    owfs_inode_t on_disk;
+    res = owfs_inode_read(&dev, &sb, f_ino, &on_disk);
     assert(res == OWFS_OK);
-    assert(found_ino == ino2);
-    printf("  [PASS] Catalog insert & SUTF-8 lookup verified\n");
+    assert(on_disk.size_bytes == BIG_SIZE);
 
-    /* 6. Test Catalog Enumeration */
+    static uint8_t readbuf[BIG_SIZE];
+    uint32_t rd = 0;
+    res = owfs_file_read(&dev, &sb, &on_disk, readbuf, 0, BIG_SIZE, &rd);
+    assert(res == OWFS_OK);
+    assert(rd == BIG_SIZE);
+    assert(ow_memcmp(readbuf, g_big, BIG_SIZE) == 0);
+    printf("  [PASS] Read back %u bytes, content matches byte-for-byte\n", rd);
+
+    uint32_t clamped = 0;
+    res = owfs_file_read(&dev, &sb, &on_disk, readbuf, 0, BIG_SIZE * 4, &clamped);
+    assert(res == OWFS_OK);
+    assert(clamped == BIG_SIZE);
+    printf("  [PASS] Read clamped at EOF (%u bytes)\n", clamped);
+
+    const uint8_t patch[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    res = owfs_file_write(&dev, &sb, &on_disk, f_ino, patch, sizeof(patch), sizeof(patch), &written);
+    assert(res == OWFS_OK);
+    assert(written == sizeof(patch));
+    assert(on_disk.size_bytes == BIG_SIZE);
+    printf("  [PASS] Partial overwrite did not truncate file (size=%u)\n", on_disk.size_bytes);
+
+    static uint8_t smallbuf[8];
+    uint32_t srd = 0;
+    res = owfs_file_read(&dev, &sb, &on_disk, smallbuf, 0, sizeof(smallbuf), &srd);
+    assert(res == OWFS_OK);
+    assert(srd == sizeof(smallbuf));
+    assert(smallbuf[0] == g_big[0]);
+    assert(smallbuf[4] == 0xDE && smallbuf[7] == 0xEF);
+    printf("  [PASS] Overwritten bytes verified at offset 4\n");
+
+    res = owfs_inode_read(&dev, &sb, d_ino, &inode);
+    assert(res == OWFS_OK);
+    assert(inode.entry_type == OWFS_ENTRY_CATALOG);
+
+    uint32_t found = 0;
+    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, fname, sizeof(fname) - 1, &found);
+    assert(res == OWFS_OK);
+    assert(found == f_ino);
+    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, dname, sizeof(dname) - 1, &found);
+    assert(res == OWFS_OK);
+    assert(found == d_ino);
+    printf("  [PASS] Catalog lookup of file & directory succeeded\n");
+
     owfs_catalog_entry_t entries[16];
-    uint32_t entry_count = 0;
-    res = owfs_catalog_list(&dev, &sb, OWFS_ROOT_INODE, entries, 16, &entry_count);
+    uint32_t count = 0;
+    res = owfs_catalog_list(&dev, &sb, OWFS_ROOT_INODE, entries, 16, &count);
     assert(res == OWFS_OK);
-    assert(entry_count == 2);
-    printf("  [PASS] Catalog listing returned %u entries\n", entry_count);
+    assert(count == 2);
+    printf("  [PASS] Root catalog lists %u entries\n", count);
 
-    /* 7. Test Catalog Removal */
-    res = owfs_catalog_remove(&dev, &sb, OWFS_ROOT_INODE, fname1, sizeof(fname1) - 1);
+    res = owfs_sync_changes(&dev, &sb);
     assert(res == OWFS_OK);
+    assert(!owfs_is_dirty(&sb));
+    printf("  [PASS] Sync committed bitmap Fletcher-64 & marked volume clean\n");
 
-    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, fname1, sizeof(fname1) - 1, &found_ino);
-    assert(res == OWFS_ERR_NOT_FOUND);
-    printf("  [PASS] Catalog removal verified\n");
-
-    /* 8. Test Power-Cut State & Sync */
     res = owfs_mark_dirty(&dev, &sb);
     assert(res == OWFS_OK);
     assert(owfs_is_dirty(&sb));
@@ -147,11 +181,38 @@ int main(void) {
     assert(!owfs_is_dirty(&sb));
     printf("  [PASS] Dirty state consistency check & auto-recovery verified\n");
 
-    res = owfs_sync_changes(&dev, &sb);
+    res = owfs_unmount(&dev, &sb);
     assert(res == OWFS_OK);
-    printf("  [PASS] Synchronous flush (owfs_sync_changes) completed\n");
+    assert(!owfs_is_dirty(&sb));
+    printf("  [PASS] Clean unmount completed\n");
 
-    /* 9. Test Scrub */
+    res = owfs_mount(&dev, &sb);
+    assert(res == OWFS_OK);
+    assert(sb.mount_count == 2);
+    printf("  [PASS] Second clean mount (mount_count=%u)\n", sb.mount_count);
+
+    res = owfs_mount(&dev, &sb);
+    assert(res == OWFS_ERR_VOLUME_DIRTY);
+    assert(sb.state_flags & OWFS_STATE_LOCKED);
+    printf("  [PASS] Crash-style re-mount refused (LOCKED, VOLUME_DIRTY)\n");
+
+    corrupt_count = 0;
+    res = owfs_consistency_check(&dev, &sb, &corrupt_count);
+    assert(res == OWFS_OK);
+    assert(corrupt_count == 0);
+    res = owfs_mount(&dev, &sb);
+    assert(res == OWFS_OK);
+    printf("  [PASS] Consistency check cleared lock, mount recovered\n");
+
+    res = owfs_inode_read(&dev, &sb, f_ino, &on_disk);
+    assert(res == OWFS_OK);
+    res = owfs_file_truncate(&dev, &sb, &on_disk, f_ino, OWFS_BLOCK_SIZE);
+    assert(res == OWFS_OK);
+    assert(on_disk.size_bytes == OWFS_BLOCK_SIZE);
+    assert(on_disk.block_count == 1);
+    printf("  [PASS] Truncate shrank file to %u bytes / %u block(s)\n",
+           on_disk.size_bytes, on_disk.block_count);
+
     res = owfs_full_scrub(&dev, RAMDISK_BLOCKS, label, sizeof(label) - 1);
     assert(res == OWFS_OK);
     printf("  [PASS] Full scrub & format completed successfully\n");

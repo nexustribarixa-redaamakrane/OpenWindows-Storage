@@ -34,6 +34,9 @@ owfs_status_t owfs_block_zero(htl_device_t *dev, uint32_t block) {
     }
     htl_status_t hres = htl_zero_block(dev, block);
     if (hres != HTL_OK) {
+        if (hres == HTL_ERR_WRITE_PROTECT) {
+            return OWFS_ERR_WRITE_PROTECTED;
+        }
         return OWFS_ERR_IO;
     }
     return OWFS_OK;

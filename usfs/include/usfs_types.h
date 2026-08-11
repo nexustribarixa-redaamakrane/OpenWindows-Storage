@@ -9,12 +9,16 @@
 #define USFS_BLOCK_SIZE         0x1000      /* 4096 bytes */
 #define USFS_BLOCK_SHIFT        12          /* log2(0x1000) */
 #define USFS_ENTRY_SIZE         0x100       /* 256 bytes per entry */
+#define USFS_ENTRIES_PER_BLOCK  (USFS_BLOCK_SIZE / USFS_ENTRY_SIZE)   /* 16 */
 #define USFS_NAME_MAX_BYTES     128         /* SUTF-8 name field */
 #define USFS_MAGIC              0x55534653UL /* 'USFS' */
 #define USFS_VERSION_MAJOR      1
-#define USFS_VERSION_MINOR      0
+#define USFS_VERSION_MINOR      1
 #define USFS_KEY_SLOT_COUNT     2           /* 2 active key slots */
 #define USFS_KEY_SLOT_SIZE      0x100       /* 256 bytes per key slot */
+#define USFS_KEY_SIZE           32          /* ChaCha20 key bytes */
+#define USFS_NONCE_SIZE         12          /* ChaCha20 nonce bytes */
+#define USFS_ENTRY_TABLE_BLOCKS 16          /* 256 entries */
 
 /* Security flags */
 #define USFS_SEC_ENCRYPTED      (1U << 0)   /* Volume-level encryption active */
@@ -26,6 +30,21 @@
 #define USFS_ENTRY_FILE         0x01
 #define USFS_ENTRY_CATALOG      0x02
 #define USFS_ENTRY_DELETED      0x80
+
+/* Permission bits (standard 9-bit rwx triplets) */
+#define USFS_MODE_OWNER_READ    (1U << 8)
+#define USFS_MODE_OWNER_WRITE   (1U << 7)
+#define USFS_MODE_OWNER_EXEC    (1U << 6)
+#define USFS_MODE_GROUP_READ    (1U << 5)
+#define USFS_MODE_GROUP_WRITE   (1U << 4)
+#define USFS_MODE_GROUP_EXEC    (1U << 3)
+#define USFS_MODE_OTHER_READ    (1U << 2)
+#define USFS_MODE_OTHER_WRITE   (1U << 1)
+#define USFS_MODE_OTHER_EXEC    (1U << 0)
+#define USFS_MODE_DEFAULT_FILE  (USFS_MODE_OWNER_READ | USFS_MODE_OWNER_WRITE | \
+                                 USFS_MODE_GROUP_READ | USFS_MODE_OTHER_READ)
+#define USFS_MODE_DEFAULT_DIR   (USFS_MODE_DEFAULT_FILE | USFS_MODE_OWNER_EXEC | \
+                                 USFS_MODE_GROUP_EXEC | USFS_MODE_OTHER_EXEC)
 
 /* Volume state flags (power-cut protection) */
 #define USFS_STATE_CLEAN        0x0000
@@ -49,7 +68,9 @@ typedef enum {
     USFS_ERR_WRITE_PROTECTED    = 12,
     USFS_ERR_ENCRYPTED          = 13,
     USFS_ERR_KEY_INVALID        = 14,
-    USFS_ERR_INVALID_PARAM      = 15
+    USFS_ERR_INVALID_PARAM      = 15,
+    USFS_ERR_NOT_CATALOG        = 16,
+    USFS_ERR_NOT_FILE           = 17
 } usfs_status_t;
 
 #endif /* USFS_TYPES_H */

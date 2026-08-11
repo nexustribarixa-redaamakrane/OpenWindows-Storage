@@ -6,6 +6,8 @@
 #include "owfs_inode.h"
 #include "owfs_catalog.h"
 #include "owfs_bitmap.h"
+#include "owfs_blockmap.h"
+#include "owfs_file.h"
 #include "owfs_blockio.h"
 #include "owfs_sync.h"
 #include "owfs_format.h"

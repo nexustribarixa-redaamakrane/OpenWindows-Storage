@@ -56,3 +56,27 @@ usfs_status_t usfs_superblock_write(htl_device_t *dev, usfs_superblock_t *sb) {
     }
     return USFS_OK;
 }
+
+uint32_t usfs_signature_compute(htl_device_t *dev, const usfs_superblock_t *sb) {
+    if (!dev || !sb) {
+        return 0;
+    }
+    static uint8_t buf[USFS_BLOCK_SIZE];
+    uint32_t crc = 0;
+    for (uint32_t i = 0; i < sb->entry_table_blocks; ++i) {
+        htl_status_t hres = htl_read_block(dev, sb->entry_table_start + i, buf);
+        if (hres != HTL_OK) {
+            return 0;
+        }
+        crc = ow_crc32c(crc, buf, USFS_BLOCK_SIZE);
+    }
+    return crc;
+}
+
+usfs_status_t usfs_signature_update(htl_device_t *dev, usfs_superblock_t *sb) {
+    if (!dev || !sb) {
+        return USFS_ERR_INVALID_PARAM;
+    }
+    sb->signature = usfs_signature_compute(dev, sb);
+    return usfs_superblock_write(dev, sb);
+}
