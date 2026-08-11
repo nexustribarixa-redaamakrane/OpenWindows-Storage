@@ -64,6 +64,13 @@ usfs_status_t usfs_format_volume(htl_device_t *dev, uint32_t total_blocks, const
         ow_sutf8_name_copy(sb.volume_label, sizeof(sb.volume_label), label, label_len);
     }
 
+    /* Draw a fresh per-volume ChaCha20 nonce so that re-formatting with a
+     * reused key still produces a distinct keystream. Falls back to zeros
+     * when the device provides no entropy source. */
+    if (htl_get_entropy(dev, sb.crypto_nonce, sizeof(sb.crypto_nonce)) != HTL_OK) {
+        ow_memset(sb.crypto_nonce, 0, sizeof(sb.crypto_nonce));
+    }
+
     static uint8_t zero_block[USFS_BLOCK_SIZE];
     ow_memset(zero_block, 0, sizeof(zero_block));
 
@@ -118,8 +125,9 @@ usfs_status_t usfs_crypto_set_key(htl_device_t *dev, usfs_superblock_t *sb, cons
     if (key_len != USFS_KEY_SIZE) {
         return USFS_ERR_KEY_INVALID;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
     }
 
     ow_memset(sb->key_slot_1, 0, sizeof(sb->key_slot_1));

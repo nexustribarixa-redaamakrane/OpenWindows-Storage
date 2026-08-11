@@ -1,6 +1,7 @@
 #ifndef USFS_MASTER_H
 #define USFS_MASTER_H
 
+#include "../../common/include/ow_sec.h"
 #include "usfs_types.h"
 #include "usfs_superblock.h"
 #include "usfs_entry.h"

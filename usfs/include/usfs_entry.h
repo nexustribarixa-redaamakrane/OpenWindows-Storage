@@ -19,7 +19,9 @@ typedef struct __attribute__((packed)) {
     uint32_t created_timestamp;         /* 0x1C */
     uint32_t modified_timestamp;        /* 0x20 */
     uint8_t  name[USFS_NAME_MAX_BYTES]; /* 0x24: SUTF-8 name (128 bytes) */
-    uint8_t  reserved[0xFC - 0xA4];     /* 0xA4: Pad toward checksum (88 bytes) */
+    uint16_t owner_uid;                 /* 0xA4: Owner principal UID */
+    uint16_t owner_gid;                 /* 0xA6: Owner principal GID */
+    uint8_t  reserved[0xFC - 0xA8];     /* 0xA8: Pad toward checksum (84 bytes) */
     uint32_t checksum;                  /* 0xFC: CRC32c of this entry */
 } usfs_entry_t;
 

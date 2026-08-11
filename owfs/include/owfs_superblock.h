@@ -23,7 +23,11 @@ typedef struct __attribute__((packed)) {
     uint64_t fletcher64_bitmap;         /* 0x3C: Fletcher-64 of bitmap region */
     uint8_t  volume_label[64];          /* 0x44: SUTF-8 volume label */
     uint32_t checksum;                  /* 0x84: CRC32c of this superblock */
-    uint8_t  reserved[0x1000 - 0x88];   /* 0x88: Pad to 4096 bytes */
+    uint32_t security_flags;            /* 0x88: OWFS_SEC_* */
+    uint8_t  key_slot_1[OWFS_KEY_SLOT_SIZE]; /* 0x8C: ChaCha20 key slot 1 (256B) */
+    uint8_t  key_slot_2[OWFS_KEY_SLOT_SIZE]; /* 0x18C: ChaCha20 key slot 2 (256B) */
+    uint8_t  crypto_nonce[OWFS_NONCE_SIZE];  /* 0x28C: Per-volume ChaCha20 nonce (12B) */
+    uint8_t  reserved[0x1000 - 0x298];  /* 0x298: Pad to 4096 bytes */
 } owfs_superblock_t;
 
 uint32_t owfs_superblock_compute_checksum(const owfs_superblock_t *sb);

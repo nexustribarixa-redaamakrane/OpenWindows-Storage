@@ -8,6 +8,21 @@ Dual-target static libraries:
 
 ---
 
+## Security Model
+
+Both filesystems enforce a common identity-based access model (`ow_sec`):
+
+- **Principals**: `ow_identity_t { uid, gid }`. Set via `ow_sec_set_identity()`. Defaults to UID 0 (superuser), which bypasses permission checks. The library is single-principal-at-a-time and host layers must serialize.
+- **Ownership**: Every entry/inode stores `owner_uid` / `owner_gid` (assigned from the creating principal) plus a standard 9-bit `rwx` mode. Owner/group/other triplets are enforced on file read/write/truncate, catalog create/insert/remove, and inode free.
+- **Read-Only Volumes**: Setting `USFS_SEC_READONLY` / `OWFS_SEC_READONLY` in the superblock rejects every write path with `ERR_WRITE_PROTECTED`.
+- **Hidden Objects**: `USFS_SEC_HIDDEN` / `OWFS_SEC_HIDDEN` on an entry/inode makes it invisible to all callers except its owner and the superuser (lookup and list).
+- **Data-At-Rest Encryption (both filesystems)**: Real ChaCha20 (20 rounds, 256-bit key, 64-byte blocks). File data blocks are XORed with a keystream keyed by the volume key, a 12-byte per-volume nonce, and the physical block number as counter. Raw device reads yield ciphertext; encrypted inodes round-trip through the file API.
+- **Per-Volume Nonce**: A fresh nonce is drawn from the device entropy callback (`htl_device_t.entropy`) at format time, so re-formatting with a reused key produces a distinct keystream.
+- **Cryptographic Purge**: Overwrites and invalidates active key slots (`key_slot_1`, `key_slot_2`) 3 times (0xFF, 0x00, 0xAA) with physical cache flushes, rendering encrypted data unrecoverable. Available as `usfs_crypto_purge` / `owfs_crypto_purge`.
+- **Limitations**: Key slots are stored in the superblock, so at-rest protection assumes the device itself is not in attacker hands. Permission enforcement is the library's responsibility; a VFS layer must supply the current identity.
+
+---
+
 ## Architectural & Subsystem Features
 
 1. **Freestanding C99 Compliance**: Built strictly with `-std=c99 -nostdlib -ffreestanding`. Zero dependencies on hosted C standard headers (`<stdio.h>`, `<stdlib.h>`, `<string.h>`). Uses custom memory routines (`ow_memcpy`, `ow_memset`, `ow_memcmp`).
@@ -28,7 +43,7 @@ Dual-target static libraries:
 6. **Erasure & Secure Sanitization Protocols**:
    - **Quick Format**: Resets Superblock, bitmap allocator, and Root Catalog headers while preserving block data.
    - **Full Scrub**: Overwrites all usable sectors with `0x00` byte streams before formatting.
-   - **Cryptographic Purge (USFS Secure Sanitize)**: Overwrites and invalidates active key slots (`key_slot_1`, `key_slot_2`) 3 times (0xFF, 0x00, 0xAA) with physical cache flushes, rendering encrypted data unrecoverable.
+   - **Cryptographic Purge**: Overwrites and invalidates active key slots (`key_slot_1`, `key_slot_2`) 3 times (0xFF, 0x00, 0xAA) with physical cache flushes, rendering encrypted data unrecoverable. Available for both filesystems (`usfs_crypto_purge`, `owfs_crypto_purge`).
 
 ---
 

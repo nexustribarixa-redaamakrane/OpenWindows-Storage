@@ -6,7 +6,25 @@
 #include "../include/owfs_sync.h"
 #include "../../common/include/ow_checksum.h"
 #include "../../common/include/ow_mem.h"
+#include "../../common/include/ow_sec.h"
 #include "../../common/include/ow_string.h"
+
+bool owfs_inode_is_hidden(const owfs_inode_t *inode) {
+    if (!inode) {
+        return false;
+    }
+    return (inode->security_flags & OWFS_SEC_HIDDEN) != 0;
+}
+
+owfs_status_t owfs_inode_access_check(const owfs_inode_t *inode, uint8_t want) {
+    if (!inode) {
+        return OWFS_ERR_INVALID_PARAM;
+    }
+    if (!ow_sec_access(inode->permissions, inode->owner_uid, inode->owner_gid, want)) {
+        return OWFS_ERR_ACCESS_DENIED;
+    }
+    return OWFS_OK;
+}
 
 uint32_t owfs_inode_compute_checksum(const owfs_inode_t *inode) {
     if (!inode) {
@@ -66,8 +84,9 @@ owfs_status_t owfs_inode_write(htl_device_t *dev, const owfs_superblock_t *sb, u
     if (inode_num >= sb->total_inodes) {
         return OWFS_ERR_NOT_FOUND;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
 
     static uint8_t block_buf[OWFS_BLOCK_SIZE];
@@ -108,8 +127,9 @@ owfs_status_t owfs_inode_alloc(htl_device_t *dev, owfs_superblock_t *sb,
     if (name && name_len > 0 && !ow_sutf8_validate(name, name_len)) {
         return OWFS_ERR_INVALID_PARAM;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
     if (sb->free_inodes == 0) {
         return OWFS_ERR_NO_FREE_INODES;
@@ -122,10 +142,14 @@ owfs_status_t owfs_inode_alloc(htl_device_t *dev, owfs_superblock_t *sb,
             return res;
         }
         if (temp.entry_type == 0 || (temp.entry_type & OWFS_ENTRY_DELETED)) {
+            ow_identity_t id = ow_sec_current();
             ow_memset(&temp, 0, sizeof(owfs_inode_t));
             temp.inode_number = i;
             temp.entry_type = entry_type;
             temp.permissions = (entry_type == OWFS_ENTRY_CATALOG) ? OWFS_MODE_DEFAULT_DIR : OWFS_MODE_DEFAULT_FILE;
+            temp.owner_uid = (uint16_t)id.uid;
+            temp.owner_gid = (uint16_t)id.gid;
+            temp.security_flags = (sb->security_flags & OWFS_SEC_ENCRYPTED) ? OWFS_SEC_ENCRYPTED : 0;
             temp.parent_inode = parent;
             temp.name_length = (uint8_t)name_len;
             if (name && name_len > 0) {
@@ -149,8 +173,9 @@ owfs_status_t owfs_inode_free(htl_device_t *dev, owfs_superblock_t *sb, uint32_t
     if (!dev || !sb) {
         return OWFS_ERR_INVALID_PARAM;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
     owfs_inode_t temp;
     owfs_status_t res = owfs_inode_read(dev, sb, inode_num, &temp);
@@ -162,6 +187,13 @@ owfs_status_t owfs_inode_free(htl_device_t *dev, owfs_superblock_t *sb, uint32_t
     }
     if (temp.entry_type & OWFS_ENTRY_DELETED) {
         return OWFS_OK;
+    }
+    if (temp.security_flags & OWFS_SEC_READONLY) {
+        return OWFS_ERR_WRITE_PROTECTED;
+    }
+    owfs_status_t access = owfs_inode_access_check(&temp, OW_ACCESS_WRITE);
+    if (access != OWFS_OK) {
+        return access;
     }
 
     res = owfs_blockmap_release(dev, sb, &temp, 0);

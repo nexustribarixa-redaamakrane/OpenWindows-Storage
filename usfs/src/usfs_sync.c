@@ -19,6 +19,9 @@ usfs_status_t usfs_volume_writable(const usfs_superblock_t *sb) {
     if (sb->state_flags & (USFS_STATE_LOCKED | USFS_STATE_ERROR)) {
         return USFS_ERR_VOLUME_DIRTY;
     }
+    if (sb->security_flags & USFS_SEC_READONLY) {
+        return USFS_ERR_WRITE_PROTECTED;
+    }
     return USFS_OK;
 }
 

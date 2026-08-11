@@ -75,6 +75,13 @@ owfs_status_t owfs_format_volume(htl_device_t *dev, uint32_t total_blocks, const
         ow_sutf8_name_copy(sb.volume_label, sizeof(sb.volume_label), label, label_len);
     }
 
+    /* Draw a fresh per-volume ChaCha20 nonce so that re-formatting with a
+     * reused key still produces a distinct keystream. Falls back to zeros
+     * when the device provides no entropy source. */
+    if (htl_get_entropy(dev, sb.crypto_nonce, sizeof(sb.crypto_nonce)) != HTL_OK) {
+        ow_memset(sb.crypto_nonce, 0, sizeof(sb.crypto_nonce));
+    }
+
     owfs_status_t res = owfs_bitmap_init(dev, &sb);
     if (res != OWFS_OK) {
         return res;
@@ -140,4 +147,54 @@ owfs_status_t owfs_full_scrub(htl_device_t *dev, uint32_t total_blocks, const ui
         }
     }
     return owfs_format_volume(dev, total_blocks, label, label_len);
+}
+
+owfs_status_t owfs_crypto_set_key(htl_device_t *dev, owfs_superblock_t *sb, const uint8_t *key, size_t key_len) {
+    if (!dev || !sb || !key) {
+        return OWFS_ERR_INVALID_PARAM;
+    }
+    if (key_len != OWFS_KEY_SIZE) {
+        return OWFS_ERR_KEY_INVALID;
+    }
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
+    }
+
+    ow_memset(sb->key_slot_1, 0, sizeof(sb->key_slot_1));
+    ow_memcpy(sb->key_slot_1, key, OWFS_KEY_SIZE);
+    sb->security_flags |= OWFS_SEC_ENCRYPTED;
+    owfs_status_t res = owfs_superblock_write(dev, sb);
+    if (res != OWFS_OK) {
+        return res;
+    }
+    htl_flush_cache(dev);
+    return OWFS_OK;
+}
+
+owfs_status_t owfs_crypto_purge(htl_device_t *dev, owfs_superblock_t *sb) {
+    if (!dev || !sb) {
+        return OWFS_ERR_INVALID_PARAM;
+    }
+
+    ow_memset(sb->key_slot_1, 0xFF, sizeof(sb->key_slot_1));
+    ow_memset(sb->key_slot_2, 0xFF, sizeof(sb->key_slot_2));
+    owfs_status_t res = owfs_superblock_write(dev, sb);
+    if (res != OWFS_OK) return res;
+    htl_flush_cache(dev);
+
+    ow_memset(sb->key_slot_1, 0x00, sizeof(sb->key_slot_1));
+    ow_memset(sb->key_slot_2, 0x00, sizeof(sb->key_slot_2));
+    res = owfs_superblock_write(dev, sb);
+    if (res != OWFS_OK) return res;
+    htl_flush_cache(dev);
+
+    ow_memset(sb->key_slot_1, 0xAA, sizeof(sb->key_slot_1));
+    ow_memset(sb->key_slot_2, 0xAA, sizeof(sb->key_slot_2));
+    res = owfs_superblock_write(dev, sb);
+    if (res != OWFS_OK) return res;
+    htl_flush_cache(dev);
+
+    sb->security_flags &= ~OWFS_SEC_ENCRYPTED;
+    return owfs_sync_changes(dev, sb);
 }

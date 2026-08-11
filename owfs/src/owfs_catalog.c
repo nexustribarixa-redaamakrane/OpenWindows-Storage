@@ -7,7 +7,19 @@
 #include "../include/owfs_sync.h"
 #include "../../common/include/ow_checksum.h"
 #include "../../common/include/ow_mem.h"
+#include "../../common/include/ow_sec.h"
 #include "../../common/include/ow_string.h"
+
+/* A hidden inode is invisible to all but its owner and the superuser. */
+static bool inode_hidden_from(htl_device_t *dev, const owfs_superblock_t *sb,
+                              uint32_t inode_num) {
+    owfs_inode_t ino;
+    if (owfs_inode_read(dev, sb, inode_num, &ino) != OWFS_OK) {
+        return false;
+    }
+    return owfs_inode_is_hidden(&ino) && !ow_sec_is_superuser() &&
+           ow_sec_current().uid != ino.owner_uid;
+}
 
 uint32_t owfs_catalog_entry_compute_checksum(const owfs_catalog_entry_t *entry) {
     if (!entry) {
@@ -51,6 +63,10 @@ owfs_status_t owfs_catalog_lookup(htl_device_t *dev, const owfs_superblock_t *sb
     if (res != OWFS_OK) {
         return res;
     }
+    res = owfs_inode_access_check(&cinode, OW_ACCESS_READ);
+    if (res != OWFS_OK) {
+        return res;
+    }
 
     static uint8_t block_buf[OWFS_BLOCK_SIZE];
 
@@ -69,6 +85,9 @@ owfs_status_t owfs_catalog_lookup(htl_device_t *dev, const owfs_superblock_t *sb
             if (centry->entry_type != 0 && !(centry->entry_type & OWFS_ENTRY_DELETED)) {
                 if (owfs_catalog_entry_verify_checksum(centry)) {
                     if (ow_sutf8_name_cmp(centry->name, centry->name_length, name, name_len) == 0) {
+                        if (inode_hidden_from(dev, sb, centry->inode_number)) {
+                            continue;
+                        }
                         *out_inode = centry->inode_number;
                         return OWFS_OK;
                     }
@@ -92,8 +111,9 @@ owfs_status_t owfs_catalog_insert(htl_device_t *dev, owfs_superblock_t *sb, uint
     if (!ow_sutf8_validate(name, name_len)) {
         return OWFS_ERR_INVALID_PARAM;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
 
     uint32_t existing = 0;
@@ -103,6 +123,10 @@ owfs_status_t owfs_catalog_insert(htl_device_t *dev, owfs_superblock_t *sb, uint
 
     owfs_inode_t cinode;
     owfs_status_t res = catalog_read(dev, sb, catalog_inode, &cinode);
+    if (res != OWFS_OK) {
+        return res;
+    }
+    res = owfs_inode_access_check(&cinode, OW_ACCESS_WRITE);
     if (res != OWFS_OK) {
         return res;
     }
@@ -167,12 +191,17 @@ owfs_status_t owfs_catalog_remove(htl_device_t *dev, owfs_superblock_t *sb, uint
     if (name_len >= OWFS_NAME_MAX_BYTES) {
         return OWFS_ERR_NAME_TOO_LONG;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
 
     owfs_inode_t cinode;
     owfs_status_t res = catalog_read(dev, sb, catalog_inode, &cinode);
+    if (res != OWFS_OK) {
+        return res;
+    }
+    res = owfs_inode_access_check(&cinode, OW_ACCESS_WRITE);
     if (res != OWFS_OK) {
         return res;
     }
@@ -193,6 +222,9 @@ owfs_status_t owfs_catalog_remove(htl_device_t *dev, owfs_superblock_t *sb, uint
             owfs_catalog_entry_t *centry = (owfs_catalog_entry_t *)(block_buf + (e * OWFS_CATALOG_ENTRY_SIZE));
             if (centry->entry_type != 0 && !(centry->entry_type & OWFS_ENTRY_DELETED)) {
                 if (ow_sutf8_name_cmp(centry->name, centry->name_length, name, name_len) == 0) {
+                    if (inode_hidden_from(dev, sb, centry->inode_number)) {
+                        return OWFS_ERR_NOT_FOUND;
+                    }
                     centry->entry_type |= OWFS_ENTRY_DELETED;
                     centry->checksum = owfs_catalog_entry_compute_checksum(centry);
                     hres = htl_write_block(dev, bnum, block_buf);
@@ -218,6 +250,10 @@ owfs_status_t owfs_catalog_list(htl_device_t *dev, const owfs_superblock_t *sb, 
     if (res != OWFS_OK) {
         return res;
     }
+    res = owfs_inode_access_check(&cinode, OW_ACCESS_READ);
+    if (res != OWFS_OK) {
+        return res;
+    }
 
     static uint8_t block_buf[OWFS_BLOCK_SIZE];
 
@@ -235,6 +271,9 @@ owfs_status_t owfs_catalog_list(htl_device_t *dev, const owfs_superblock_t *sb, 
             const owfs_catalog_entry_t *centry = (const owfs_catalog_entry_t *)(block_buf + (e * OWFS_CATALOG_ENTRY_SIZE));
             if (centry->entry_type != 0 && !(centry->entry_type & OWFS_ENTRY_DELETED)) {
                 if (owfs_catalog_entry_verify_checksum(centry)) {
+                    if (inode_hidden_from(dev, sb, centry->inode_number)) {
+                        continue;
+                    }
                     if (*out_count < max_entries) {
                         ow_memcpy(&entries[*out_count], centry, sizeof(owfs_catalog_entry_t));
                         (*out_count)++;

@@ -6,18 +6,25 @@
 #include "../include/usfs_sync.h"
 #include "../../common/include/ow_crypto.h"
 #include "../../common/include/ow_mem.h"
+#include "../../common/include/ow_sec.h"
 
 static bool is_encrypted(const usfs_superblock_t *sb, const usfs_entry_t *entry) {
     return (sb->security_flags & USFS_SEC_ENCRYPTED) &&
            (entry->security_flags & USFS_SEC_ENCRYPTED);
 }
 
+static usfs_status_t entry_access_check(const usfs_entry_t *entry, uint8_t want) {
+    if (!ow_sec_access(entry->permissions, entry->owner_uid, entry->owner_gid, want)) {
+        return USFS_ERR_ACCESS_DENIED;
+    }
+    return USFS_OK;
+}
+
 static void crypto_xform(const usfs_superblock_t *sb, const usfs_entry_t *entry,
                          uint8_t *buf, uint32_t abs_block, bool encrypt) {
     (void)encrypt;
     if (is_encrypted(sb, entry)) {
-        static const uint8_t zero_nonce[OW_CHACHA20_NONCE_SIZE] = {0};
-        ow_chacha20_xor(abs_block, sb->key_slot_1, zero_nonce, buf, USFS_BLOCK_SIZE);
+        ow_chacha20_xor(abs_block, sb->key_slot_1, sb->crypto_nonce, buf, USFS_BLOCK_SIZE);
     }
 }
 
@@ -74,6 +81,10 @@ usfs_status_t usfs_file_read(htl_device_t *dev, const usfs_superblock_t *sb,
     if (entry->entry_type != USFS_ENTRY_FILE) {
         return USFS_ERR_NOT_FILE;
     }
+    usfs_status_t access = entry_access_check(entry, OW_ACCESS_READ);
+    if (access != USFS_OK) {
+        return access;
+    }
     *out_read = 0;
     if (entry->block_count == 0 || offset >= entry->size_bytes) {
         return USFS_OK;
@@ -114,8 +125,16 @@ usfs_status_t usfs_file_write(htl_device_t *dev, usfs_superblock_t *sb,
     if (entry->entry_type != USFS_ENTRY_FILE) {
         return USFS_ERR_NOT_FILE;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
+    }
+    if (entry->security_flags & USFS_SEC_READONLY) {
+        return USFS_ERR_WRITE_PROTECTED;
+    }
+    usfs_status_t access = entry_access_check(entry, OW_ACCESS_WRITE);
+    if (access != USFS_OK) {
+        return access;
     }
     *out_written = 0;
     if (len == 0) {
@@ -167,8 +186,16 @@ usfs_status_t usfs_file_truncate(htl_device_t *dev, usfs_superblock_t *sb,
     if (entry->entry_type != USFS_ENTRY_FILE) {
         return USFS_ERR_NOT_FILE;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
+    }
+    if (entry->security_flags & USFS_SEC_READONLY) {
+        return USFS_ERR_WRITE_PROTECTED;
+    }
+    usfs_status_t access = entry_access_check(entry, OW_ACCESS_WRITE);
+    if (access != USFS_OK) {
+        return access;
     }
     if (new_size == entry->size_bytes) {
         return USFS_OK;

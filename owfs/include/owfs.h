@@ -1,6 +1,7 @@
 #ifndef OWFS_MASTER_H
 #define OWFS_MASTER_H
 
+#include "../../common/include/ow_sec.h"
 #include "owfs_types.h"
 #include "owfs_superblock.h"
 #include "owfs_inode.h"

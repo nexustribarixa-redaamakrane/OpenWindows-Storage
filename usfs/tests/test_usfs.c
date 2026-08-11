@@ -13,6 +13,7 @@
 #include "../include/usfs_format.h"
 #include "../../common/include/ow_mem.h"
 #include "../../common/include/ow_crypto.h"
+#include "../../common/include/ow_sec.h"
 
 #define RAMDISK_BLOCKS 256
 #define RAMDISK_SIZE   (RAMDISK_BLOCKS * USFS_BLOCK_SIZE)
@@ -42,6 +43,16 @@ static htl_status_t ramdisk_flush(void *ctx) {
     return HTL_OK;
 }
 
+static uint32_t g_entropy_state = 0x9E3779B9U;
+static htl_status_t ramdisk_entropy(void *ctx, uint8_t *out, size_t len) {
+    (void)ctx;
+    for (size_t i = 0; i < len; ++i) {
+        g_entropy_state = g_entropy_state * 1664525U + 1013904223U;
+        out[i] = (uint8_t)(g_entropy_state >> 24);
+    }
+    return HTL_OK;
+}
+
 #define P1_LEN 9000
 #define P2_OFF 20000
 #define P2_LEN 20000
@@ -62,6 +73,7 @@ int main(void) {
     dev.read_block = ramdisk_read;
     dev.write_block = ramdisk_write;
     dev.flush_cache = ramdisk_flush;
+    dev.entropy = ramdisk_entropy;
     dev.block_size = USFS_BLOCK_SIZE;
     dev.total_blocks = RAMDISK_BLOCKS;
     dev.device_type = HTL_DEV_USB_MASS;
@@ -78,7 +90,9 @@ int main(void) {
     assert(sb.total_blocks == RAMDISK_BLOCKS);
     assert(usfs_superblock_validate(&sb));
     assert(sb.used_entries == 1);
+    assert(sb.crypto_nonce[0] != 0 || sb.crypto_nonce[1] != 0 || sb.crypto_nonce[2] != 0);
     printf("  [PASS] Superblock read & CRC32c validation succeeded (root catalog allocated)\n");
+    printf("  [PASS] Per-volume ChaCha20 nonce generated at format\n");
 
     const uint8_t fname[] = "payload.dat";
     uint32_t eidx = 0;
@@ -255,6 +269,75 @@ int main(void) {
     assert(on_disk.size_bytes == USFS_BLOCK_SIZE);
     assert(on_disk.block_count == 1);
     printf("  [PASS] Truncate shrank file to 1 block\n");
+
+    /* ---- Permission enforcement (ownership) ---- */
+    static uint8_t denybuf[8];
+    ow_memset(denybuf, 0, sizeof(denybuf));
+    usfs_entry_t perms_entry;
+    res = usfs_entry_read(&dev, &sb, eidx, &perms_entry);
+    assert(res == USFS_OK);
+    perms_entry.permissions = 0x180; /* 0600: owner rw only */
+    res = usfs_entry_write(&dev, &sb, eidx, &perms_entry);
+    assert(res == USFS_OK);
+
+    ow_identity_t uid;
+    uid.uid = 1000;
+    uid.gid = 1000;
+    ow_sec_set_identity(&uid);
+    uint32_t ddenied = 0;
+    res = usfs_file_read(&dev, &sb, &perms_entry, denybuf, 0, sizeof(denybuf), &ddenied);
+    assert(res == USFS_ERR_ACCESS_DENIED);
+    res = usfs_file_write(&dev, &sb, &perms_entry, eidx, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == USFS_ERR_ACCESS_DENIED);
+    printf("  [PASS] Non-owner denied read/write on 0600 file (ACCESS_DENIED)\n");
+
+    ow_sec_reset();
+    perms_entry.owner_uid = 1000;
+    perms_entry.owner_gid = 1000;
+    res = usfs_entry_write(&dev, &sb, eidx, &perms_entry);
+    assert(res == USFS_OK);
+    ow_sec_set_identity(&uid);
+    res = usfs_file_write(&dev, &sb, &perms_entry, eidx, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == USFS_OK);
+    assert(written == sizeof(denybuf));
+    printf("  [PASS] Owner (uid 1000) granted write after ownership transfer\n");
+    ow_sec_reset();
+
+    /* ---- HIDDEN entry ---- */
+    const uint8_t hidden_name[] = "hidden.dat";
+    uint32_t hid_idx = 0;
+    res = usfs_entry_alloc(&dev, &sb, USFS_ENTRY_FILE, hidden_name, sizeof(hidden_name) - 1, 0, &hid_idx);
+    assert(res == USFS_OK);
+    usfs_entry_t hid_entry;
+    res = usfs_entry_read(&dev, &sb, hid_idx, &hid_entry);
+    assert(res == USFS_OK);
+    hid_entry.security_flags |= USFS_SEC_HIDDEN;
+    res = usfs_entry_write(&dev, &sb, hid_idx, &hid_entry);
+    assert(res == USFS_OK);
+
+    ow_identity_t stranger;
+    stranger.uid = 2000;
+    stranger.gid = 2000;
+    ow_sec_set_identity(&stranger);
+    uint32_t hid_found = 0;
+    res = usfs_entry_lookup(&dev, &sb, 0, hidden_name, sizeof(hidden_name) - 1, &hid_found);
+    assert(res == USFS_ERR_NOT_FOUND);
+    ow_sec_reset();
+    res = usfs_entry_lookup(&dev, &sb, 0, hidden_name, sizeof(hidden_name) - 1, &hid_found);
+    assert(res == USFS_OK);
+    assert(hid_found == hid_idx);
+    printf("  [PASS] HIDDEN entries invisible to non-owner, visible to root\n");
+
+    /* ---- Volume-level READONLY ---- */
+    sb.security_flags |= USFS_SEC_READONLY;
+    res = usfs_superblock_write(&dev, &sb);
+    assert(res == USFS_OK);
+    res = usfs_file_write(&dev, &sb, &perms_entry, eidx, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == USFS_ERR_WRITE_PROTECTED);
+    printf("  [PASS] USFS_SEC_READONLY volume rejects writes\n");
+    sb.security_flags &= ~USFS_SEC_READONLY;
+    res = usfs_superblock_write(&dev, &sb);
+    assert(res == USFS_OK);
 
     res = usfs_crypto_purge(&dev, &sb);
     assert(res == USFS_OK);

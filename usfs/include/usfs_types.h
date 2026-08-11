@@ -13,7 +13,7 @@
 #define USFS_NAME_MAX_BYTES     128         /* SUTF-8 name field */
 #define USFS_MAGIC              0x55534653UL /* 'USFS' */
 #define USFS_VERSION_MAJOR      1
-#define USFS_VERSION_MINOR      1
+#define USFS_VERSION_MINOR      2
 #define USFS_KEY_SLOT_COUNT     2           /* 2 active key slots */
 #define USFS_KEY_SLOT_SIZE      0x100       /* 256 bytes per key slot */
 #define USFS_KEY_SIZE           32          /* ChaCha20 key bytes */
@@ -70,7 +70,8 @@ typedef enum {
     USFS_ERR_KEY_INVALID        = 14,
     USFS_ERR_INVALID_PARAM      = 15,
     USFS_ERR_NOT_CATALOG        = 16,
-    USFS_ERR_NOT_FILE           = 17
+    USFS_ERR_NOT_FILE           = 17,
+    USFS_ERR_ACCESS_DENIED      = 18
 } usfs_status_t;
 
 #endif /* USFS_TYPES_H */

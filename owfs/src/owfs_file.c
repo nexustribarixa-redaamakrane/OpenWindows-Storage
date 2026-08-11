@@ -5,8 +5,22 @@
 #include "../include/owfs_blockmap.h"
 #include "../include/owfs_bitmap.h"
 #include "../include/owfs_sync.h"
+#include "../../common/include/ow_crypto.h"
 #include "../../common/include/ow_mem.h"
 #include "../../common/include/ow_htl.h"
+#include "../../common/include/ow_sec.h"
+
+static bool is_encrypted(const owfs_superblock_t *sb, const owfs_inode_t *inode) {
+    return (sb->security_flags & OWFS_SEC_ENCRYPTED) &&
+           (inode->security_flags & OWFS_SEC_ENCRYPTED);
+}
+
+static void crypto_xform(const owfs_superblock_t *sb, const owfs_inode_t *inode,
+                         uint8_t *buf, uint32_t block_num) {
+    if (is_encrypted(sb, inode)) {
+        ow_chacha20_xor(block_num, sb->key_slot_1, sb->crypto_nonce, buf, OWFS_BLOCK_SIZE);
+    }
+}
 
 static owfs_status_t ensure_blocks(htl_device_t *dev, owfs_superblock_t *sb,
                                    owfs_inode_t *inode, uint32_t last_block) {
@@ -30,6 +44,10 @@ owfs_status_t owfs_file_read(htl_device_t *dev, const owfs_superblock_t *sb,
     *out_read = 0;
     if (!(inode->entry_type & OWFS_ENTRY_FILE)) {
         return OWFS_ERR_NOT_FILE;
+    }
+    owfs_status_t access = owfs_inode_access_check(inode, OW_ACCESS_READ);
+    if (access != OWFS_OK) {
+        return access;
     }
     if (offset >= inode->size_bytes || len == 0) {
         return OWFS_OK;
@@ -58,6 +76,7 @@ owfs_status_t owfs_file_read(htl_device_t *dev, const owfs_superblock_t *sb,
         if (hres != HTL_OK) {
             return OWFS_ERR_IO;
         }
+        crypto_xform(sb, inode, block_buf, bnum);
         ow_memcpy(buf + done, block_buf + off, chunk);
         done += chunk;
     }
@@ -79,8 +98,16 @@ owfs_status_t owfs_file_write(htl_device_t *dev, owfs_superblock_t *sb,
     if (len == 0) {
         return OWFS_OK;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
+    }
+    if (inode->security_flags & OWFS_SEC_READONLY) {
+        return OWFS_ERR_WRITE_PROTECTED;
+    }
+    owfs_status_t access = owfs_inode_access_check(inode, OW_ACCESS_WRITE);
+    if (access != OWFS_OK) {
+        return access;
     }
     if ((uint64_t)offset + len > (uint64_t)OWFS_MAX_LOGICAL_BLOCKS * OWFS_BLOCK_SIZE) {
         return OWFS_ERR_BUFFER_TOO_SMALL;
@@ -120,13 +147,16 @@ owfs_status_t owfs_file_write(htl_device_t *dev, owfs_superblock_t *sb,
         htl_status_t hres;
         if (off == 0 && chunk == OWFS_BLOCK_SIZE) {
             ow_memcpy(block_buf, buf + written, OWFS_BLOCK_SIZE);
+            crypto_xform(sb, inode, block_buf, bnum);
         } else {
             hres = htl_read_block(dev, bnum, block_buf);
             if (hres != HTL_OK) {
                 failure = OWFS_ERR_IO;
                 break;
             }
+            crypto_xform(sb, inode, block_buf, bnum);
             ow_memcpy(block_buf + off, buf + written, chunk);
+            crypto_xform(sb, inode, block_buf, bnum);
         }
 
         hres = htl_write_block(dev, bnum, block_buf);
@@ -163,11 +193,19 @@ owfs_status_t owfs_file_truncate(htl_device_t *dev, owfs_superblock_t *sb,
     if (!(inode->entry_type & OWFS_ENTRY_FILE)) {
         return OWFS_ERR_NOT_FILE;
     }
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
+    }
+    if (inode->security_flags & OWFS_SEC_READONLY) {
+        return OWFS_ERR_WRITE_PROTECTED;
+    }
+    owfs_status_t access = owfs_inode_access_check(inode, OW_ACCESS_WRITE);
+    if (access != OWFS_OK) {
+        return access;
+    }
     if (new_size >= inode->size_bytes) {
         return OWFS_OK;
-    }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
     }
     if (inode_num >= sb->total_inodes) {
         return OWFS_ERR_NOT_FOUND;

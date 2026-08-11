@@ -8,10 +8,12 @@
 #include "../include/owfs_superblock.h"
 #include "../include/owfs_inode.h"
 #include "../include/owfs_catalog.h"
+#include "../include/owfs_blockmap.h"
 #include "../include/owfs_file.h"
 #include "../include/owfs_sync.h"
 #include "../include/owfs_format.h"
 #include "../../common/include/ow_mem.h"
+#include "../../common/include/ow_sec.h"
 
 #define RAMDISK_BLOCKS 512
 #define RAMDISK_SIZE   (RAMDISK_BLOCKS * OWFS_BLOCK_SIZE)
@@ -41,6 +43,16 @@ static htl_status_t ramdisk_flush(void *ctx) {
     return HTL_OK;
 }
 
+static uint32_t g_entropy_state = 0x12345678U;
+static htl_status_t ramdisk_entropy(void *ctx, uint8_t *out, size_t len) {
+    (void)ctx;
+    for (size_t i = 0; i < len; ++i) {
+        g_entropy_state = g_entropy_state * 1664525U + 1013904223U;
+        out[i] = (uint8_t)(g_entropy_state >> 16);
+    }
+    return HTL_OK;
+}
+
 #define BIG_SIZE (11 * OWFS_BLOCK_SIZE) /* crosses direct -> indirect boundary */
 
 static uint8_t g_big[BIG_SIZE];
@@ -58,6 +70,7 @@ int main(void) {
     dev.read_block = ramdisk_read;
     dev.write_block = ramdisk_write;
     dev.flush_cache = ramdisk_flush;
+    dev.entropy = ramdisk_entropy;
     dev.block_size = OWFS_BLOCK_SIZE;
     dev.total_blocks = RAMDISK_BLOCKS;
     dev.device_type = HTL_DEV_AHCI_SATA;
@@ -73,7 +86,9 @@ int main(void) {
     assert(sb.magic == OWFS_MAGIC);
     assert(sb.total_blocks == RAMDISK_BLOCKS);
     assert(owfs_superblock_validate(&sb));
+    assert(sb.crypto_nonce[0] != 0 || sb.crypto_nonce[1] != 0 || sb.crypto_nonce[2] != 0);
     printf("  [PASS] Superblock read & CRC32c validation succeeded\n");
+    printf("  [PASS] Per-volume ChaCha20 nonce generated at format\n");
 
     res = owfs_mount(&dev, &sb);
     assert(res == OWFS_OK);
@@ -212,6 +227,112 @@ int main(void) {
     assert(on_disk.block_count == 1);
     printf("  [PASS] Truncate shrank file to %u bytes / %u block(s)\n",
            on_disk.size_bytes, on_disk.block_count);
+
+    /* ---- OWFS ChaCha20 encryption round-trip ---- */
+    uint8_t key[OWFS_KEY_SIZE];
+    for (uint32_t i = 0; i < sizeof(key); ++i) {
+        key[i] = (uint8_t)(i * 5U + 3);
+    }
+    res = owfs_crypto_set_key(&dev, &sb, key, sizeof(key));
+    assert(res == OWFS_OK);
+    assert(sb.security_flags & OWFS_SEC_ENCRYPTED);
+
+    const uint8_t secret_name[] = "secret.bin";
+    uint32_t secret_ino = 0;
+    res = owfs_catalog_create(&dev, &sb, OWFS_ROOT_INODE, secret_name, sizeof(secret_name) - 1, &secret_ino);
+    assert(res == OWFS_OK);
+    owfs_inode_t sec_inode;
+    res = owfs_inode_read(&dev, &sb, secret_ino, &sec_inode);
+    assert(res == OWFS_OK);
+    assert(sec_inode.security_flags & OWFS_SEC_ENCRYPTED);
+
+    static uint8_t sec_data[16 * OWFS_BLOCK_SIZE];
+    for (uint32_t i = 0; i < sizeof(sec_data); ++i) {
+        sec_data[i] = (uint8_t)(i ^ 0x3C);
+    }
+    uint32_t sec_written = 0;
+    res = owfs_file_write(&dev, &sb, &sec_inode, secret_ino, sec_data, 0, sizeof(sec_data), &sec_written);
+    assert(res == OWFS_OK);
+    assert(sec_written == sizeof(sec_data));
+
+    static uint8_t raw_block[OWFS_BLOCK_SIZE];
+    uint32_t bnum = 0;
+    res = owfs_blockmap_get(&dev, &sec_inode, 0, &bnum);
+    assert(res == OWFS_OK);
+    htl_status_t hres = htl_read_block(&dev, bnum, raw_block);
+    assert(hres == HTL_OK);
+    assert(ow_memcmp(raw_block, sec_data, sizeof(sec_data)) != 0);
+
+    static uint8_t sec_read[sizeof(sec_data)];
+    uint32_t sec_rd = 0;
+    res = owfs_file_read(&dev, &sb, &sec_inode, sec_read, 0, sizeof(sec_data), &sec_rd);
+    assert(res == OWFS_OK);
+    assert(sec_rd == sizeof(sec_data));
+    assert(ow_memcmp(sec_read, sec_data, sizeof(sec_data)) == 0);
+    printf("  [PASS] OWFS ChaCha20 encryption round-trip verified (raw block differs)\n");
+
+    /* ---- Permission enforcement (ownership) ---- */
+    static uint8_t denybuf[8];
+    ow_memset(denybuf, 0, sizeof(denybuf));
+    res = owfs_inode_read(&dev, &sb, f_ino, &inode);
+    assert(res == OWFS_OK);
+    inode.permissions = 0x180; /* 0600: owner rw only */
+    res = owfs_inode_write(&dev, &sb, f_ino, &inode);
+    assert(res == OWFS_OK);
+
+    ow_identity_t uid;
+    uid.uid = 1000;
+    uid.gid = 1000;
+    ow_sec_set_identity(&uid);
+    uint32_t denied = 0;
+    res = owfs_file_read(&dev, &sb, &inode, denybuf, 0, sizeof(denybuf), &denied);
+    assert(res == OWFS_ERR_ACCESS_DENIED);
+    res = owfs_file_write(&dev, &sb, &inode, f_ino, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == OWFS_ERR_ACCESS_DENIED);
+    printf("  [PASS] Non-owner denied read/write on 0600 inode (ACCESS_DENIED)\n");
+
+    ow_sec_reset();
+    inode.owner_uid = 1000;
+    inode.owner_gid = 1000;
+    res = owfs_inode_write(&dev, &sb, f_ino, &inode);
+    assert(res == OWFS_OK);
+    ow_sec_set_identity(&uid);
+    res = owfs_file_write(&dev, &sb, &inode, f_ino, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == OWFS_OK);
+    assert(written == sizeof(denybuf));
+    printf("  [PASS] Owner (uid 1000) granted write after ownership transfer\n");
+    ow_sec_reset();
+
+    /* ---- HIDDEN inode ---- */
+    sec_inode.security_flags |= OWFS_SEC_HIDDEN;
+    res = owfs_inode_write(&dev, &sb, secret_ino, &sec_inode);
+    assert(res == OWFS_OK);
+
+    ow_identity_t stranger;
+    stranger.uid = 2000;
+    stranger.gid = 2000;
+    ow_sec_set_identity(&stranger);
+    uint32_t lfound = 0;
+    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, secret_name, sizeof(secret_name) - 1, &lfound);
+    assert(res == OWFS_ERR_NOT_FOUND);
+    ow_sec_reset();
+    res = owfs_catalog_lookup(&dev, &sb, OWFS_ROOT_INODE, secret_name, sizeof(secret_name) - 1, &lfound);
+    assert(res == OWFS_OK);
+    assert(lfound == secret_ino);
+    printf("  [PASS] HIDDEN inode invisible to non-owner, visible to root\n");
+
+    /* ---- Volume-level READONLY ---- */
+    sb.security_flags |= OWFS_SEC_READONLY;
+    res = owfs_superblock_write(&dev, &sb);
+    assert(res == OWFS_OK);
+    res = owfs_inode_read(&dev, &sb, f_ino, &inode);
+    assert(res == OWFS_OK);
+    res = owfs_file_write(&dev, &sb, &inode, f_ino, denybuf, 0, sizeof(denybuf), &written);
+    assert(res == OWFS_ERR_WRITE_PROTECTED);
+    printf("  [PASS] OWFS_SEC_READONLY volume rejects writes\n");
+    sb.security_flags &= ~OWFS_SEC_READONLY;
+    res = owfs_superblock_write(&dev, &sb);
+    assert(res == OWFS_OK);
 
     res = owfs_full_scrub(&dev, RAMDISK_BLOCKS, label, sizeof(label) - 1);
     assert(res == OWFS_OK);

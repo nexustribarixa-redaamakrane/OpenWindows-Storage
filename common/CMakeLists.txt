@@ -6,6 +6,7 @@ add_library(ow_common OBJECT
     src/ow_checksum.c
     src/ow_htl.c
     src/ow_crypto.c
+    src/ow_sec.c
 )
 
 target_include_directories(ow_common PUBLIC include)

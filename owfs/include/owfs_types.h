@@ -18,15 +18,24 @@
 #define OWFS_NAME_MAX_BYTES     128         /* SUTF-8 encoded name field */
 #define OWFS_MAGIC              0x4F574653UL /* 'OWFS' */
 #define OWFS_VERSION_MAJOR      1
-#define OWFS_VERSION_MINOR      1
+#define OWFS_VERSION_MINOR      2
 #define OWFS_ROOT_INODE         0           /* Inode 0 = root catalog ('/') */
 #define OWFS_TOTAL_INODES       0x1000      /* 4096 inodes */
 #define OWFS_INODE_TABLE_BLOCKS (OWFS_TOTAL_INODES / OWFS_INODES_PER_BLOCK) /* 256 */
+#define OWFS_KEY_SLOT_COUNT     2           /* 2 active key slots */
+#define OWFS_KEY_SLOT_SIZE      0x100       /* 256 bytes per key slot */
+#define OWFS_KEY_SIZE           32          /* ChaCha20 key bytes */
+#define OWFS_NONCE_SIZE         12          /* ChaCha20 nonce bytes */
 
 /* Entry type flags */
 #define OWFS_ENTRY_FILE         0x01
 #define OWFS_ENTRY_CATALOG      0x02        /* Directory at disk level */
 #define OWFS_ENTRY_DELETED      0x80
+
+/* Volume / inode security flags */
+#define OWFS_SEC_ENCRYPTED      (1U << 0)   /* ChaCha20 data-at-rest encryption */
+#define OWFS_SEC_READONLY       (1U << 1)   /* Writes blocked */
+#define OWFS_SEC_HIDDEN         (1U << 2)   /* Invisible to non-owner callers */
 
 /* Permission bits (standard 9-bit rwx triplets) */
 #define OWFS_MODE_OWNER_READ    (1U << 8)
@@ -66,7 +75,9 @@ typedef enum {
     OWFS_ERR_CATALOG_FULL       = 13,
     OWFS_ERR_VOLUME_DIRTY       = 14,
     OWFS_ERR_WRITE_PROTECTED    = 15,
-    OWFS_ERR_INVALID_PARAM      = 16
+    OWFS_ERR_INVALID_PARAM      = 16,
+    OWFS_ERR_ACCESS_DENIED      = 17,
+    OWFS_ERR_KEY_INVALID        = 18
 } owfs_status_t;
 
 #endif /* OWFS_TYPES_H */

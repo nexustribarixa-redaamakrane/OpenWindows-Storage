@@ -26,7 +26,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  key_slot_1[USFS_KEY_SLOT_SIZE]; /* 0x88: ChaCha20 key slot 1 (256B) */
     uint8_t  key_slot_2[USFS_KEY_SLOT_SIZE]; /* 0x188: ChaCha20 key slot 2 (256B) */
     uint32_t checksum;                  /* 0x288: CRC32c of this superblock */
-    uint8_t  reserved[0x1000 - 0x28C];  /* 0x28C: Pad to 4096 bytes */
+    uint8_t  crypto_nonce[USFS_NONCE_SIZE]; /* 0x28C: Per-volume ChaCha20 nonce (12B) */
+    uint8_t  reserved[0x1000 - 0x298];  /* 0x298: Pad to 4096 bytes */
 } usfs_superblock_t;
 
 uint32_t usfs_superblock_compute_checksum(const usfs_superblock_t *sb);

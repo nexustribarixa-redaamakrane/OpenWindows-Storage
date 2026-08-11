@@ -3,6 +3,7 @@
 
 #include "owfs_types.h"
 #include "owfs_superblock.h"
+#include "../../common/include/ow_sec.h"
 
 #define OWFS_DIRECT_BLOCKS  10
 #define OWFS_INDIRECT_BLOCK  1
@@ -21,7 +22,10 @@ typedef struct __attribute__((packed)) {
     uint32_t direct_blocks[OWFS_DIRECT_BLOCKS]; /* 0x1E: 10 * 4B = 40B */
     uint32_t indirect_block;            /* 0x46: Pointer to indirect block */
     uint8_t  name[OWFS_NAME_MAX_BYTES]; /* 0x4A: SUTF-8 name (128 bytes) */
-    uint8_t  reserved[0xFC - 0xCA];     /* 0xCA: Pad toward checksum (50 bytes) */
+    uint16_t owner_uid;                 /* 0xCA: Owner principal UID */
+    uint16_t owner_gid;                 /* 0xCC: Owner principal GID */
+    uint8_t  security_flags;            /* 0xCE: OWFS_SEC_* per-inode flags */
+    uint8_t  reserved[0xFC - 0xCF];     /* 0xCF: Pad toward checksum (45 bytes) */
     uint32_t checksum;                  /* 0xFC: CRC32c of this inode entry */
 } owfs_inode_t;
 
@@ -29,6 +33,10 @@ uint32_t owfs_inode_compute_checksum(const owfs_inode_t *inode);
 bool owfs_inode_verify_checksum(const owfs_inode_t *inode);
 owfs_status_t owfs_inode_read(htl_device_t *dev, const owfs_superblock_t *sb, uint32_t inode_num, owfs_inode_t *inode);
 owfs_status_t owfs_inode_write(htl_device_t *dev, const owfs_superblock_t *sb, uint32_t inode_num, owfs_inode_t *inode);
+
+/* Security helpers shared by file and catalog layers. */
+bool owfs_inode_is_hidden(const owfs_inode_t *inode);
+owfs_status_t owfs_inode_access_check(const owfs_inode_t *inode, uint8_t want);
 
 /* Allocate a new inode of the given type with SUTF-8 name and parent.
  * For OWFS_ENTRY_CATALOG the inode is created without a data block; the first

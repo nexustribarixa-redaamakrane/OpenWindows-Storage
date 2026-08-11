@@ -50,6 +50,16 @@ htl_status_t htl_flush_cache(htl_device_t *dev) {
     return HTL_OK;
 }
 
+htl_status_t htl_get_entropy(htl_device_t *dev, uint8_t *out, size_t len) {
+    if (!htl_device_valid(dev) || !out || len == 0) {
+        return HTL_ERR_INVALID_PARAM;
+    }
+    if (!dev->entropy) {
+        return HTL_ERR_NOT_READY;
+    }
+    return dev->entropy(dev->driver_ctx, out, len);
+}
+
 htl_status_t htl_zero_block(htl_device_t *dev, uint32_t block_num) {
     if (!htl_device_valid(dev)) {
         return HTL_ERR_INVALID_PARAM;

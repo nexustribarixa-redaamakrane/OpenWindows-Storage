@@ -59,8 +59,9 @@ usfs_status_t usfs_block_alloc(htl_device_t *dev, usfs_superblock_t *sb, uint32_
     if (sb->total_blocks <= sb->data_region_start) {
         return USFS_ERR_NO_FREE_BLOCKS;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
     }
 
     static uint8_t buf[USFS_BLOCK_SIZE];
@@ -128,8 +129,9 @@ usfs_status_t usfs_block_free(htl_device_t *dev, usfs_superblock_t *sb, uint32_t
     if (first < sb->data_region_start || (uint64_t)first + count > sb->total_blocks) {
         return USFS_ERR_INVALID_PARAM;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
     }
 
     static uint8_t buf[USFS_BLOCK_SIZE];

@@ -6,7 +6,26 @@
 #include "../include/usfs_sync.h"
 #include "../../common/include/ow_checksum.h"
 #include "../../common/include/ow_mem.h"
+#include "../../common/include/ow_sec.h"
 #include "../../common/include/ow_string.h"
+
+static bool entry_is_hidden(const usfs_entry_t *entry) {
+    return (entry->security_flags & USFS_SEC_HIDDEN) != 0;
+}
+
+/* Non-superuser callers must hold the requested access to `entry`. */
+static usfs_status_t entry_check_access(const usfs_entry_t *entry, uint8_t want) {
+    if (!entry) {
+        return USFS_ERR_INVALID_PARAM;
+    }
+    if (entry->entry_type == 0) {
+        return USFS_ERR_NOT_FOUND;
+    }
+    if (!ow_sec_access(entry->permissions, entry->owner_uid, entry->owner_gid, want)) {
+        return USFS_ERR_ACCESS_DENIED;
+    }
+    return USFS_OK;
+}
 
 uint32_t usfs_entry_compute_checksum(const usfs_entry_t *entry) {
     if (!entry) {
@@ -68,8 +87,9 @@ usfs_status_t usfs_entry_write(htl_device_t *dev, usfs_superblock_t *sb, uint32_
     if (entry_idx >= sb->total_entries) {
         return USFS_ERR_NOT_FOUND;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
     }
 
     static uint8_t block_buf[USFS_BLOCK_SIZE];
@@ -125,8 +145,27 @@ usfs_status_t usfs_entry_alloc(htl_device_t *dev, usfs_superblock_t *sb,
     if (sb->used_entries >= sb->total_entries) {
         return USFS_ERR_NO_FREE_ENTRIES;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
+    }
+
+    /* Creating an entry requires write access to the parent catalog. The
+     * bootstrap root creation (parent 0 before the root entry exists) is
+     * exempt. */
+    if (parent != 0 || sb->used_entries > 0) {
+        usfs_entry_t parent_entry;
+        usfs_status_t pres = usfs_entry_read(dev, sb, parent, &parent_entry);
+        if (pres != USFS_OK) {
+            return pres;
+        }
+        if (parent_entry.entry_type == 0) {
+            return USFS_ERR_NOT_FOUND;
+        }
+        pres = entry_check_access(&parent_entry, OW_ACCESS_WRITE);
+        if (pres != USFS_OK) {
+            return pres;
+        }
     }
 
     uint16_t mode = 0;
@@ -155,9 +194,12 @@ usfs_status_t usfs_entry_alloc(htl_device_t *dev, usfs_superblock_t *sb,
     }
 
     ow_memset(&temp, 0, sizeof(usfs_entry_t));
+    ow_identity_t id = ow_sec_current();
     temp.entry_index = chosen;
     temp.entry_type = entry_type;
     temp.permissions = mode;
+    temp.owner_uid = (uint16_t)id.uid;
+    temp.owner_gid = (uint16_t)id.gid;
     temp.parent_entry = parent;
     temp.name_length = (uint8_t)name_len;
     temp.security_flags = (sb->security_flags & USFS_SEC_ENCRYPTED) ? USFS_SEC_ENCRYPTED : 0;
@@ -197,11 +239,22 @@ usfs_status_t usfs_entry_free(htl_device_t *dev, usfs_superblock_t *sb, uint32_t
     if (!dev || !sb) {
         return USFS_ERR_INVALID_PARAM;
     }
-    if (usfs_volume_writable(sb) != USFS_OK) {
-        return USFS_ERR_VOLUME_DIRTY;
+    usfs_status_t vw = usfs_volume_writable(sb);
+    if (vw != USFS_OK) {
+        return vw;
     }
     usfs_entry_t temp;
     usfs_status_t res = usfs_entry_read(dev, sb, entry_idx, &temp);
+    if (res != USFS_OK) {
+        return res;
+    }
+    if (temp.entry_type == 0) {
+        return USFS_ERR_NOT_FOUND;
+    }
+    if (temp.security_flags & USFS_SEC_READONLY) {
+        return USFS_ERR_WRITE_PROTECTED;
+    }
+    res = entry_check_access(&temp, OW_ACCESS_WRITE);
     if (res != USFS_OK) {
         return res;
     }
@@ -237,6 +290,10 @@ usfs_status_t usfs_entry_lookup(htl_device_t *dev, const usfs_superblock_t *sb, 
         if (usfs_entry_read(dev, sb, i, &temp) == USFS_OK) {
             if (temp.entry_type != 0 && !(temp.entry_type & USFS_ENTRY_DELETED)) {
                 if (temp.parent_entry == parent_idx) {
+                    if (entry_is_hidden(&temp) && !ow_sec_is_superuser() &&
+                        ow_sec_current().uid != temp.owner_uid) {
+                        continue; /* hidden from all but owner / superuser */
+                    }
                     if (ow_sutf8_name_cmp(temp.name, temp.name_length, name, name_len) == 0) {
                         *out_entry_idx = i;
                         return USFS_OK;

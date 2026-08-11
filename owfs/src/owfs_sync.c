@@ -20,6 +20,9 @@ owfs_status_t owfs_volume_writable(const owfs_superblock_t *sb) {
     if (sb->state_flags & (OWFS_STATE_LOCKED | OWFS_STATE_ERROR)) {
         return OWFS_ERR_VOLUME_DIRTY;
     }
+    if (sb->security_flags & OWFS_SEC_READONLY) {
+        return OWFS_ERR_WRITE_PROTECTED;
+    }
     return OWFS_OK;
 }
 

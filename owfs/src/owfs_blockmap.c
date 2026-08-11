@@ -76,8 +76,9 @@ owfs_status_t owfs_blockmap_ensure(htl_device_t *dev, owfs_superblock_t *sb,
     if (idx >= OWFS_MAX_LOGICAL_BLOCKS) {
         return OWFS_ERR_NO_FREE_BLOCKS;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
     if (idx < inode->block_count) {
         return owfs_blockmap_get(dev, inode, idx, out_block);
@@ -133,8 +134,9 @@ owfs_status_t owfs_blockmap_release(htl_device_t *dev, owfs_superblock_t *sb,
     if (!dev || !sb || !inode) {
         return OWFS_ERR_INVALID_PARAM;
     }
-    if (owfs_volume_writable(sb) != OWFS_OK) {
-        return OWFS_ERR_VOLUME_DIRTY;
+    owfs_status_t vw = owfs_volume_writable(sb);
+    if (vw != OWFS_OK) {
+        return vw;
     }
     if (from_idx >= inode->block_count) {
         return OWFS_OK;
