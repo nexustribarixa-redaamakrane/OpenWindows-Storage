@@ -19,7 +19,7 @@ set_target_properties(usfs_static PROPERTIES
 target_include_directories(usfs_static PUBLIC include ../common/include)
 
 # Freestanding C99 compliance flags for the library itself
-target_compile_options(usfs_static PRIVATE -ffreestanding -fno-stack-protector -Wall -Wextra)
+target_compile_options(usfs_static PRIVATE -std=c99 -nostdlib -ffreestanding -fno-stack-protector -Wall -Wextra)
 
 add_custom_command(TARGET usfs_static POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy

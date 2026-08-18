@@ -16,6 +16,7 @@ Both filesystems enforce a common identity-based access model (`ow_sec`):
 - **Ownership**: Every entry/inode stores `owner_uid` / `owner_gid` (assigned from the creating principal) plus a standard 9-bit `rwx` mode. Owner/group/other triplets are enforced on file read/write/truncate, catalog create/insert/remove, and inode free.
 - **Read-Only Volumes**: Setting `USFS_SEC_READONLY` / `OWFS_SEC_READONLY` in the superblock rejects every write path with `ERR_WRITE_PROTECTED`.
 - **Hidden Objects**: `USFS_SEC_HIDDEN` / `OWFS_SEC_HIDDEN` on an entry/inode makes it invisible to all callers except its owner and the superuser (lookup and list).
+- **Entry Table Integrity Signing (USFS only)**: Setting `USFS_SEC_SIGNED` in the superblock enables CRC32c-based tamper-evidence over the entire USFS entry table. Computed via `usfs_signature_compute()` and stored in the superblock; verified during consistency checks via `usfs_signature_verify()`. This does not encrypt data but provides integrity attestation for the entry table.
 - **Data-At-Rest Encryption (both filesystems)**: Real ChaCha20 (20 rounds, 256-bit key, 64-byte blocks). File data blocks are XORed with a keystream keyed by the volume key, a 12-byte per-volume nonce, and the physical block number as counter. Raw device reads yield ciphertext; encrypted inodes round-trip through the file API.
 - **Per-Volume Nonce**: A fresh nonce is drawn from the device entropy callback (`htl_device_t.entropy`) at format time, so re-formatting with a reused key produces a distinct keystream.
 - **Cryptographic Purge**: Overwrites and invalidates active key slots (`key_slot_1`, `key_slot_2`) 3 times (0xFF, 0x00, 0xAA) with physical cache flushes, rendering encrypted data unrecoverable. Available as `usfs_crypto_purge` / `owfs_crypto_purge`.
@@ -35,13 +36,13 @@ Both filesystems enforce a common identity-based access model (`ow_sec`):
 
 ## Mandatory Core Driver Modules
 
-1. **Hardware Translation Layer (HTL Driver Module)**: Physical block device abstraction (`htl_read_block`, `htl_write_block`, `htl_flush_cache`) supporting NVMe, AHCI/SATA, and USB Mass Storage SCSI endpoints.
+1. **Hardware Translation Layer (HTL Driver Module)**: Physical block device abstraction (`htl_read_block`, `htl_write_block`, `htl_flush_cache`) via function-pointer-based driver callbacks. Type tags (`HTL_DEV_NVME`, `HTL_DEV_AHCI_SATA`, `HTL_DEV_USB_MASS`) identify the endpoint class; users supply the actual driver implementation.
 2. **Corruption Detection & Checksumming**: Integrated CRC32c (Castagnoli) and Fletcher-64 block-level integrity verification embedded directly into Superblock, Inode, and Catalog headers.
 3. **Power-Cut Protection & State Locking**: Real-time volume state tracking (`OWFS_STATE_DIRTY` / `USFS_STATE_DIRTY`). Abrupt power loss triggers volume locking and mandatory consistency scans (`owfs_consistency_check`) before writes are allowed.
 4. **Direct Synchronous Flush**: Bare-metal disk synchronization routines (`owfs_sync_changes`, `usfs_flush_dirty`) forcing uncommitted changes directly to physical non-volatile storage.
 5. **Formatting Protocols**: Automated volume synthesis (`owfs_format_volume`, `usfs_format_volume`) initializing clean Superblocks, Block Allocation Bitmaps, and Root Catalogs (`/`).
 6. **Erasure & Secure Sanitization Protocols**:
-   - **Quick Format**: Resets Superblock, bitmap allocator, and Root Catalog headers while preserving block data.
+   - **Quick Format**: Resets Superblock, bitmap allocator, and Root Catalog headers. Physical data region bytes are left on disk but metadata tracking them is destroyed (data is unrecoverable).
    - **Full Scrub**: Overwrites all usable sectors with `0x00` byte streams before formatting.
    - **Cryptographic Purge**: Overwrites and invalidates active key slots (`key_slot_1`, `key_slot_2`) 3 times (0xFF, 0x00, 0xAA) with physical cache flushes, rendering encrypted data unrecoverable. Available for both filesystems (`usfs_crypto_purge`, `owfs_crypto_purge`).
 

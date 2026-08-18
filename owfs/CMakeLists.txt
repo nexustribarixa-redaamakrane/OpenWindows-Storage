@@ -21,7 +21,7 @@ set_target_properties(owfs_static PROPERTIES
 target_include_directories(owfs_static PUBLIC include ../common/include)
 
 # Freestanding C99 compliance flags for the library itself
-target_compile_options(owfs_static PRIVATE -ffreestanding -fno-stack-protector -Wall -Wextra)
+target_compile_options(owfs_static PRIVATE -std=c99 -nostdlib -ffreestanding -fno-stack-protector -Wall -Wextra)
 
 add_custom_command(TARGET owfs_static POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
