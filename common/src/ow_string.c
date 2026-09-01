@@ -7,13 +7,15 @@
 /* Decode one SUTF-8 sequence (SuperUnicode 31-bit transport).
  * Returns the number of bytes consumed (>0), 0 on end-of-buffer, or -1 on a
  * malformed / non-canonical / reserved sequence. Rules mirror the canonical
- * SuperUnicode codec:
+ * SuperUnicode codec (libsutf sutf8.c) exactly:
  *   1-byte  0x00000000 .. 0x0000007F
  *   2-byte  0x00000080 .. 0x000007FF
- *   3-byte  0x00000800 .. 0x0000FFFF   (surrogates rejected)
+ *   3-byte  0x00000800 .. 0x0000FFFF   (0xD800-0xDFFF are valid SUCS PUA)
  *   4-byte  0x00010000 .. 0x0010FFFF
  *   5-byte  0x00110000 .. 0x03FFFFFF
- *   6-byte  0x04000000 .. 0x7FFFFFFF
+ *   6-byte  0x04000000 .. 0x7FFFFFEF
+ * The Kernel Security Trap range (0x7FFFFFF0-0x7FFFFFFE) and the sentinel
+ * (0x7FFFFFFF) are reserved kernel codepoints and never transportable.
  */
 static int sutf8_decode_one(const uint8_t *s, size_t len, uint32_t *out_cp) {
     if (!s || len == 0) {
@@ -40,7 +42,6 @@ static int sutf8_decode_one(const uint8_t *s, size_t len, uint32_t *out_cp) {
                       ((uint32_t)(s[1] & 0x3FU) << 6) |
                       (uint32_t)(s[2] & 0x3FU);
         if (cp < 0x800U) return -1;              /* overlong */
-        if (cp >= 0xD800U && cp <= 0xDFFFU) return -1; /* surrogate */
         *out_cp = cp;
         return 3;
     }
@@ -81,6 +82,7 @@ static int sutf8_decode_one(const uint8_t *s, size_t len, uint32_t *out_cp) {
                       ((uint32_t)(s[4] & 0x3FU) << 6) |
                       (uint32_t)(s[5] & 0x3FU);
         if (cp < 0x04000000U) return -1; /* overlong */
+        if (cp >= 0x7FFFFFF0U) return -1; /* Kernel Security Trap range & sentinel */
         *out_cp = cp;
         return 6;
     }
